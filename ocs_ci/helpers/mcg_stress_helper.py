@@ -16,7 +16,6 @@ from ocs_ci.ocs.bucket_utils import (
     s3_copy_object,
     list_objects_from_bucket,
     sync_object_directory,
-    rm_object_recursive,
     s3_list_objects_v2,
     list_objects_in_batches,
     s3_delete_objects,
@@ -314,40 +313,60 @@ def run_noobaa_metadata_intense_ops(
     executor.shutdown()
 
 
-def delete_objs_from_bucket(pod_obj, bucket, prev_iteration, event=None, multiplier=1):
+def delete_objs_from_bucket(
+    pod_obj, bucket, prev_iteration, event=None, multiplier=1, batch_size=20000
+):
     """
-    Delete all the objects from a bucket
+    Delete all the objects from a bucket under the given prefix.
+
+    Deletes via the boto3 S3 API in batches (list + delete_objects) rather than a
+    single `aws s3 rm --recursive` over one long-lived `oc exec` stream. Deleting
+    millions of objects with one recursive exec keeps a single stream open to the
+    API server for hours, which the cluster/load-balancer max-connection-age
+    eventually severs (i/o timeout). Batched S3-API calls are short-lived and
+    naturally resumable, so the operation survives long stress runs.
 
     Args:
-        pod_obj (Pod): Noobaa stress CLI pod object
+        pod_obj (Pod): Noobaa stress CLI pod object (unused; kept for signature
+            compatibility with the concurrent executor call site)
         bucket (Tuple): Tuple consisting of backend storage type and bucket object
         prev_iteration (int): Iteration number or prefix from where should delete objects
         event (threading.Event()): Event object to signal the execution
             completion
+        multiplier (int): Iteration multiplier (used only for the summary log)
+        batch_size (int): Number of objects to delete per S3 delete_objects call
 
     """
     current_iteration = prev_iteration + 1
     bucket_type, bucket_obj = bucket
     bucket_name = bucket_obj.name
-    base_timeout = 20000
-    timeout = base_timeout * multiplier
 
     mcg_obj = get_mcg_obj(bucket)
 
     logger.info(
-        f"DELETE OP: Delete objects recursively from the bucket "
+        f"DELETE OP: Delete objects in batches of {batch_size} from the bucket "
         f"{bucket_name} under prefix {prev_iteration}"
     )
 
-    rm_object_recursive(
-        pod_obj,
-        bucket_name,
+    total_objs_deleted = 0
+    for obj_batch in list_objects_in_batches(
         mcg_obj,
-        prefix=prev_iteration,
-        timeout=timeout,
-    )
+        bucket_name,
+        prefix=str(prev_iteration),
+        batch_size=batch_size,
+        yield_individual=False,
+    ):
+        if not obj_batch:
+            continue
+        s3_delete_objects(mcg_obj, bucket_name, obj_batch)
+        total_objs_deleted += len(obj_batch)
+        logger.info(
+            f"DELETE OP: Deleted {total_objs_deleted} objects so far from "
+            f"bucket {bucket_name} under prefix {prev_iteration}"
+        )
+
     logger.info(
-        f"DELETE OP: Total of {(multiplier-1)*1000000} objects got deleted "
+        f"DELETE OP: Total of {total_objs_deleted} objects got deleted "
         f"in the current iteration {current_iteration}"
     )
     logger.info(

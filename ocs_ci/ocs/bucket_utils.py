@@ -3263,7 +3263,7 @@ def delete_objects_from_source_and_wait_for_deletion_sync(
 
 
 def list_objects_in_batches(
-    mcg_obj, bucket_name, batch_size=1000, yield_individual=True
+    mcg_obj, bucket_name, prefix="", batch_size=1000, yield_individual=True
 ):
     """
     This method lists objects in a bucket either in batch of mentioned batch_size
@@ -3273,6 +3273,7 @@ def list_objects_in_batches(
     Args:
         mcg_obj (MCG): MCG object
         bucket_name (str): Name of the bucket
+        prefix (str): Limits the response to keys that begin with the specified prefix.
         batch_size (int): Number of objects to list at a time, by default 1000
         yield_individual (bool): If True, it will yield indviudal objects until all the
         objects are listed. If False, batch of objects are yielded.
@@ -3286,7 +3287,11 @@ def list_objects_in_batches(
 
     while True:
         response = s3_list_objects_v2(
-            mcg_obj, bucket_name, max_keys=batch_size, start_after=marker
+            mcg_obj,
+            bucket_name,
+            prefix=prefix,
+            max_keys=batch_size,
+            start_after=marker,
         )
         if yield_individual:
             for obj in response.get("Contents", []):
